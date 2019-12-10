@@ -1,18 +1,13 @@
-use crate::platform::Body;
-use crate::{get_response_unchecked, ChatMessage, Client, Error, Race};
-use futures::prelude::*;
-use http::{
-    header::{CONNECTION, UPGRADE},
-    Request, StatusCode,
+use crate::{
+    connect_ws,
+    platform::{Message, WsError, WsStream},
+    ChatMessage, Client, Error, Race,
 };
+use futures_util::{sink::SinkExt, stream::Stream};
 use snafu::ResultExt;
 use std::{
     pin::Pin,
     task::{Context, Poll},
-};
-use tokio_tungstenite::{
-    tungstenite::{protocol::Role, Message},
-    WebSocketStream,
 };
 use uuid::Uuid;
 
@@ -162,21 +157,17 @@ pub enum EventError {
     /// The message could not be parsed.
     Parse { source: serde_json::Error },
     /// Failed to receive the message.
-    Receive {
-        source: tokio_tungstenite::tungstenite::Error,
-    },
+    Receive { source: WsError },
 }
 
 #[derive(Debug, snafu::Snafu)]
 pub enum SendError {
     /// Failed to send the message.
-    Send {
-        source: tokio_tungstenite::tungstenite::Error,
-    },
+    Send { source: WsError },
 }
 
 pub struct Events {
-    ws: WebSocketStream<hyper::upgrade::Upgraded>,
+    ws: WsStream,
 }
 
 impl Stream for Events {
@@ -185,7 +176,7 @@ impl Stream for Events {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
             return Poll::Ready(
-                match futures::ready!(Pin::new(&mut self.ws).poll_next(cx)) {
+                match futures_util::ready!(Pin::new(&mut self.ws).poll_next(cx)) {
                     Some(Ok(Message::Text(text))) => match serde_json::from_str(&text)
                         .context(Parse)
                         .and_then(RawEvent::convert)
@@ -240,30 +231,7 @@ impl Events {
 }
 
 pub async fn events(client: &Client) -> Result<Events, Error> {
-    let response = get_response_unchecked(
-        client,
-        Request::get("https://splits.io/api/cable")
-            .header(CONNECTION, "Upgrade")
-            .header(UPGRADE, "websocket")
-            .header("Sec-WebSocket-Version", "13")
-            .header("Sec-WebSocket-Key", "TotallyRandomBytesHere==")
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await?;
-
-    let status = response.status();
-    if status != StatusCode::SWITCHING_PROTOCOLS {
-        return Err(Error::Status { status });
-    }
-
-    let upgraded = response
-        .into_body()
-        .on_upgrade()
-        .await
-        .context(super::Download)?;
-
-    let ws = WebSocketStream::from_raw_socket(upgraded, Role::Client, None).await;
-
-    Ok(Events { ws })
+    Ok(Events {
+        ws: connect_ws(client, "https://splits.io/api/cable").await?,
+    })
 }

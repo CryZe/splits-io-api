@@ -5,7 +5,7 @@ use snafu::ResultExt;
 mod platform;
 
 pub mod category;
-// pub mod event;
+pub mod event;
 pub mod game;
 pub mod race;
 pub mod run;
@@ -50,6 +50,10 @@ pub enum Error {
     Download { source: crate::platform::Error },
     /// Failed to parse the response.
     Json { source: serde_json::Error },
+}
+
+async fn connect_ws(client: &Client, uri: &str) -> Result<platform::WsStream, Error> {
+    client.client.connect_ws(uri).await
 }
 
 async fn get_response_unchecked(
